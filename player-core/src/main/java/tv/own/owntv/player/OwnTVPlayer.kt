@@ -3074,9 +3074,16 @@ class OwnTVPlayer(
                 tv.own.owntv.core.player.EnginePreference.firstOn(onMpv = !startOnExo)
             else -> vodEngine
         }
-        // Catch-up follows the user's ExoPlayer choice too (the Movies & Series setting, or the HUD toggle,
-        // pinned per channel by catchupPinKey); with the default mpv-first setting it still starts on mpv.
-        if (!isLive && startOnExo && resetRetries) {
+        // A catch-up programme follows the user's ExoPlayer choice too (the Movies & Series setting, or the
+        // HUD toggle, pinned per channel by catchupPinKey); with the default mpv-first setting it still
+        // starts on mpv. A live rewind (rewindStartMs) stays on mpv, as before.
+        val archiveOnExo = isArchive && meta.rewindStartMs == null
+        // ...and opens on a FRESH surface, like the HUD toggle: started from the Live list, the attached
+        // surface is the preview's, already being replaced by the player's, and ExoPlayer configured onto
+        // it fails ("nativeWindowConnect returned an error: Invalid argument (-22)") and drops to its
+        // software rescue: the stutter this item set out to avoid, on a weaker TV.
+        val exoFreshSurface = needsFreshSurface || (archiveOnExo && surfaceAttached)
+        if (!isLive && startOnExo && resetRetries && (!isArchive || archiveOnExo)) {
             item.exoPrimaryThisItem = true
             item.exoVodFallback = true // Exo owns VOD playback as an ENGINE — same HUD interception as fallback
             android.util.Log.i(TAG, "VOD starting on ExoPlayer (preferred engine setting)")
@@ -3102,7 +3109,7 @@ class OwnTVPlayer(
                         // holds, which fails instantly (Realtek 0x80001000 / a black surface).
                         delay(DECODER_RELEASE_MS)
                         if (gen != loadGeneration) return@launch
-                        if (needsFreshSurface) {
+                        if (exoFreshSurface) {
                             // 4K-class item on a surface the previous heavy session left dirty: recreate the
                             // SurfaceView and let attachSurface route it straight into startExo, exactly as
                             // the manual engine toggle does. Reusing the surface here is what produces the
@@ -3117,7 +3124,7 @@ class OwnTVPlayer(
                         if (startPaused) exoEngine?.pause()
                     }
                 }
-            } else if (needsFreshSurface) {
+            } else if (exoFreshSurface) {
                 // Same 4K-class gate with no mpv file to hand off (e.g. Exo→Exo back to back).
                 pendingUrl = url
                 load.pendingExoStart = true
