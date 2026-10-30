@@ -2541,7 +2541,10 @@ class OwnTVPlayer(
             subtitleFontsDir?.let { setOptionString("sub-fonts-dir", it.absolutePath) }
             setOptionString("vo", if (useDirect()) "mediacodec_embed" else "gpu")
             setOptionString("gpu-context", "android")
-            setOptionString("hwdec", if (useDirect()) "mediacodec" else "no")
+            // The same decoder [applyRenderConfig] sets for the current item. A load reconfigures only when
+            // its render path differs from the previous item's, so a core recreated during a catch-up
+            // (hardReset) that started on "no" left every later catch-up of the session in software decode.
+            setOptionString("hwdec", targetHwdec())
             setOptionString("hwdec-codecs", HWDEC_CODECS)
             setOptionString("ao", "audiotrack")
             // Surround sound (opt-in, default off): decode Dolby/DTS to MULTICHANNEL LPCM (5.1/7.1) over HDMI. The
@@ -3071,7 +3074,9 @@ class OwnTVPlayer(
                 tv.own.owntv.core.player.EnginePreference.firstOn(onMpv = !startOnExo)
             else -> vodEngine
         }
-        if (!isLive && startOnExo && resetRetries && !isArchive) {
+        // Catch-up follows the user's ExoPlayer choice too (the Movies & Series setting, or the HUD toggle,
+        // pinned per channel by catchupPinKey); with the default mpv-first setting it still starts on mpv.
+        if (!isLive && startOnExo && resetRetries) {
             item.exoPrimaryThisItem = true
             item.exoVodFallback = true // Exo owns VOD playback as an ENGINE — same HUD interception as fallback
             android.util.Log.i(TAG, "VOD starting on ExoPlayer (preferred engine setting)")
