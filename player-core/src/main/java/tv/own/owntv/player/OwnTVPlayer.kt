@@ -3063,27 +3063,35 @@ class OwnTVPlayer(
         val drmProtected = currentDrm != null
         // v44 — the playlist's own Movies & Series engine wins over the global one.
         val vodEngine = vodEngineOverride ?: vodEngine
-        val startOnExo = if (drmProtected) true else pinnedToExo ?: !vodEngine.startsOnMpv
+        // Poterx: catch-up and live rewind start on ExoPlayer, with mpv as the fallback, whatever the
+        // Movies & Series setting says; only "mpv only", or a channel the user pinned to mpv with the HUD
+        // toggle, keeps them on mpv. mpv opens an archive on the copy path (hardware decode, every frame
+        // copied through the GPU): on a Google TV Streamer (MediaTek) that dropped 2666 frames of a 1080p50
+        // catch-up, where ExoPlayer, decoding straight to the surface, dropped none.
+        val engineRule = when {
+            !isArchive -> vodEngine
+            vodEngine == tv.own.owntv.core.player.EnginePreference.MPV_ONLY -> vodEngine
+            vodEngine == tv.own.owntv.core.player.EnginePreference.EXO_ONLY -> vodEngine
+            else -> tv.own.owntv.core.player.EnginePreference.EXO_FIRST
+        }
+        val startOnExo = if (drmProtected) true else pinnedToExo ?: !engineRule.startsOnMpv
         // A pin that contradicts an "only" setting re-opens the handover for this one item: the user
         // named an engine for it *against* the global rule, so locking that item to the engine they
         // overrode would leave it with no way to reach the one that plays it. Everything else keeps the
         // setting's own rules, including its refusal to hand over at all.
         itemEngine = when {
             drmProtected -> tv.own.owntv.core.player.EnginePreference.EXO_ONLY
-            vodEngine.allowsHandover || startOnExo == vodEngine.startsOnMpv ->
+            engineRule.allowsHandover || startOnExo == engineRule.startsOnMpv ->
                 tv.own.owntv.core.player.EnginePreference.firstOn(onMpv = !startOnExo)
-            else -> vodEngine
+            else -> engineRule
         }
-        // A catch-up programme follows the user's ExoPlayer choice too (the Movies & Series setting, or the
-        // HUD toggle, pinned per channel by catchupPinKey); with the default mpv-first setting it still
-        // starts on mpv. A live rewind (rewindStartMs) stays on mpv, as before.
-        val archiveOnExo = isArchive && meta.rewindStartMs == null
-        // ...and opens on a FRESH surface, like the HUD toggle: started from the Live list, the attached
-        // surface is the preview's, already being replaced by the player's, and ExoPlayer configured onto
-        // it fails ("nativeWindowConnect returned an error: Invalid argument (-22)") and drops to its
-        // software rescue: the stutter this item set out to avoid, on a weaker TV.
-        val exoFreshSurface = needsFreshSurface || (archiveOnExo && surfaceAttached)
-        if (!isLive && startOnExo && resetRetries && (!isArchive || archiveOnExo)) {
+        // An archive started on ExoPlayer opens on a FRESH surface, like the HUD toggle. The attached one is
+        // either the Live list preview's, already being replaced by the player's, or the one mpv has just
+        // taken back (deactivateExo → reattachMpvSurface above); configured onto either, MediaCodec fails
+        // ("nativeWindowConnect returned an error: Invalid argument (-22)") and ExoPlayer drops to its
+        // software rescue, which is the stutter this rule exists to avoid.
+        val exoFreshSurface = needsFreshSurface || (isArchive && surfaceAttached)
+        if (!isLive && startOnExo && resetRetries) {
             item.exoPrimaryThisItem = true
             item.exoVodFallback = true // Exo owns VOD playback as an ENGINE — same HUD interception as fallback
             android.util.Log.i(TAG, "VOD starting on ExoPlayer (preferred engine setting)")
