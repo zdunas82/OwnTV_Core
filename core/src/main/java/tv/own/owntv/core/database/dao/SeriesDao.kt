@@ -5,11 +5,17 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.RawQuery
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 import tv.own.owntv.core.catalog.withProviderCatalogMetadata
 import tv.own.owntv.core.database.entity.ContentHashProjection
+import tv.own.owntv.core.database.entity.ContentOrderEntity
+import tv.own.owntv.core.database.entity.CustomCategoryMemberEntity
+import tv.own.owntv.core.database.entity.FavoriteEntity
+import tv.own.owntv.core.database.entity.WatchHistoryEntity
 import tv.own.owntv.core.database.entity.EpisodeEntity
 import tv.own.owntv.core.database.entity.SeasonEntity
 import tv.own.owntv.core.database.entity.SeriesEntity
@@ -17,6 +23,18 @@ import tv.own.owntv.core.database.entity.SeriesEntity
 /** Series browsing plus the Show → Season → Episode hierarchy. */
 @Dao
 interface SeriesDao {
+    /**
+     * A list built by [tv.own.owntv.core.content.vodListQuery]: the year filter and the year order,
+     * which would otherwise multiply every query above by their combinations. Observes every table
+     * the built SQL can join, so a favourite added or a title moved re-runs it like the fixed ones.
+     */
+    @RawQuery(observedEntities = [SeriesEntity::class, FavoriteEntity::class, WatchHistoryEntity::class, ContentOrderEntity::class, CustomCategoryMemberEntity::class])
+    fun pagingRaw(query: SupportSQLiteQuery): PagingSource<Int, SeriesEntity>
+
+    /** The count of [pagingRaw]'s list, from [tv.own.owntv.core.content.vodCountQuery]. */
+    @RawQuery(observedEntities = [SeriesEntity::class, FavoriteEntity::class, WatchHistoryEntity::class, ContentOrderEntity::class, CustomCategoryMemberEntity::class])
+    fun countRaw(query: SupportSQLiteQuery): Flow<Int>
+
     // --- Series ---
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSeriesNormalized(series: List<SeriesEntity>)

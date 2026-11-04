@@ -1346,7 +1346,8 @@ class SettingsRepository(private val context: Context, private val localeStore: 
 
     /** How a browse section's lists are ordered. RATING (highest provider rating first) applies to
      *  Movies/Series only; Live/EPG never select it. */
-    enum class SortMode { PLAYLIST, ALPHA, RATING, DATE_ADDED }
+    /** YEAR: release year, newest first (Movies and Series only; Live TV never offers it). */
+    enum class SortMode { PLAYLIST, ALPHA, RATING, DATE_ADDED, YEAR }
 
     /** All three browse sections (Live/Movies/Series) default to the playlist/provider's own order — the
      *  natural grouping a user expects right after a sync. A–Z is one tap away (toggleSort). */
