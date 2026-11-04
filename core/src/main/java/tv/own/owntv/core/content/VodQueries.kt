@@ -1,6 +1,8 @@
 package tv.own.owntv.core.content
 
 import androidx.paging.PagingSource
+import androidx.sqlite.db.SimpleSQLiteQuery
+import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 import tv.own.owntv.core.database.dao.CustomCategoryDao
 import tv.own.owntv.core.database.dao.MovieDao
@@ -33,8 +35,13 @@ fun moviePagingSource(
     customCategoryDao: CustomCategoryDao,
     contextKey: (Long) -> String?,
     hasManualOrder: (String) -> Boolean,
+    filter: VodFilter = VodFilter.NONE,
 ): PagingSource<Int, MovieEntity> {
     val ids = sourceIds.ifEmpty { listOf(-1L) }
+    // A year filter or the year order: one built query instead of a copy of every fixed one below.
+    if (filter.active || sort == SettingsRepository.SortMode.YEAR) {
+        return movieDao.pagingRaw(vodListQuery(VodTable.MOVIES, key, profileId, ids, query, sort, filter))
+    }
     val rating = sort == SettingsRepository.SortMode.RATING
     val dateAdded = sort == SettingsRepository.SortMode.DATE_ADDED
     val playlist = sort == SettingsRepository.SortMode.PLAYLIST
@@ -87,8 +94,12 @@ fun seriesPagingSource(
     customCategoryDao: CustomCategoryDao,
     contextKey: (Long) -> String?,
     hasManualOrder: (String) -> Boolean,
+    filter: VodFilter = VodFilter.NONE,
 ): PagingSource<Int, SeriesEntity> {
     val ids = sourceIds.ifEmpty { listOf(-1L) }
+    if (filter.active || sort == SettingsRepository.SortMode.YEAR) {
+        return seriesDao.pagingRaw(vodListQuery(VodTable.SERIES, key, profileId, ids, query, sort, filter))
+    }
     val rating = sort == SettingsRepository.SortMode.RATING
     val dateAdded = sort == SettingsRepository.SortMode.DATE_ADDED
     val playlist = sort == SettingsRepository.SortMode.PLAYLIST
@@ -138,8 +149,11 @@ fun movieCountFlow(
     hiddenCats: Set<Long>,
     movieDao: MovieDao,
     customCategoryDao: CustomCategoryDao,
+    filter: VodFilter = VodFilter.NONE,
+    query: String = "",
 ): Flow<Int> {
     val ids = sourceIds.ifEmpty { listOf(-1L) }
+    if (filter.active) return movieDao.countRaw(vodCountQuery(VodTable.MOVIES, key, profileId, ids, query, filter, hiddenCats))
     return when (key) {
         LiveKey.All, LiveKey.Catchup ->
             if (hiddenCats.isEmpty()) movieDao.countAll(ids)
@@ -159,8 +173,11 @@ fun seriesCountFlow(
     hiddenCats: Set<Long>,
     seriesDao: SeriesDao,
     customCategoryDao: CustomCategoryDao,
+    filter: VodFilter = VodFilter.NONE,
+    query: String = "",
 ): Flow<Int> {
     val ids = sourceIds.ifEmpty { listOf(-1L) }
+    if (filter.active) return seriesDao.countRaw(vodCountQuery(VodTable.SERIES, key, profileId, ids, query, filter, hiddenCats))
     return when (key) {
         LiveKey.All, LiveKey.Catchup ->
             if (hiddenCats.isEmpty()) seriesDao.countAll(ids)
@@ -170,4 +187,106 @@ fun seriesCountFlow(
         is LiveKey.Custom -> customCategoryDao.countMembers(profileId, MediaType.SERIES, key.id, ids)
         is LiveKey.Folder -> seriesDao.countByCategory(key.id)
     }
+}
+
+/** The two VOD tables the built queries select from, with the media type their user-data rows carry. */
+enum class VodTable(val table: String, val mediaType: String) { MOVIES("movies", "MOVIE"), SERIES("series", "SERIES") }
+
+/**
+ * The year column the filter and the year order read: the provider's year, else the one parsed
+ * from the title. The alias `x` is the VOD table in every built query.
+ */
+private const val YEAR_EXPR = "COALESCE(x.year, x.parsedYear)"
+
+/**
+ * The list for one selection with a year filter and/or the year order, as SQL built here instead of
+ * a fixed DAO query per combination: the selection's own FROM/WHERE (All, a folder, Favorites,
+ * History or a custom category), the search, the year bounds, then the order.
+ *
+ * Manual order (Move) is not applied here: a filtered or year-ordered list is a different view of
+ * the folder, and the hand-made order belongs to the plain one.
+ */
+fun vodListQuery(
+    table: VodTable,
+    key: LiveKey,
+    profileId: Long,
+    sourceIds: List<Long>,
+    query: String,
+    sort: SettingsRepository.SortMode,
+    filter: VodFilter,
+): SupportSQLiteQuery {
+    val (from, args) = vodFromWhere(table, key, profileId, sourceIds, query, filter, hiddenCats = emptySet())
+    val order = when (sort) {
+        SettingsRepository.SortMode.YEAR -> "$YEAR_EXPR DESC, x.name ASC"
+        SettingsRepository.SortMode.ALPHA -> "x.name ASC"
+        SettingsRepository.SortMode.RATING -> "x.rating DESC, x.name ASC"
+        SettingsRepository.SortMode.DATE_ADDED -> "x.addedAt DESC, x.sortOrder DESC, x.id DESC"
+        SettingsRepository.SortMode.PLAYLIST -> when (key) {
+            LiveKey.All, LiveKey.Catchup -> "x.sourceId ASC, x.sortOrder ASC, x.name ASC"
+            is LiveKey.Folder -> "x.sortOrder ASC, x.name ASC"
+            LiveKey.Favorites -> "f.addedAt DESC"
+            LiveKey.History -> "h.watchedAt DESC"
+            is LiveKey.Custom -> "m.position, x.sortOrder, x.name"
+        }
+    }
+    return SimpleSQLiteQuery("SELECT x.* $from ORDER BY $order", args.toTypedArray())
+}
+
+/** The count behind [vodListQuery]'s list; [hiddenCats] are left out of All, as the fixed count does. */
+fun vodCountQuery(
+    table: VodTable,
+    key: LiveKey,
+    profileId: Long,
+    sourceIds: List<Long>,
+    query: String,
+    filter: VodFilter,
+    hiddenCats: Set<Long>,
+): SupportSQLiteQuery {
+    val (from, args) = vodFromWhere(table, key, profileId, sourceIds, query, filter, hiddenCats)
+    return SimpleSQLiteQuery("SELECT COUNT(*) $from", args.toTypedArray())
+}
+
+private fun vodFromWhere(
+    table: VodTable,
+    key: LiveKey,
+    profileId: Long,
+    sourceIds: List<Long>,
+    query: String,
+    filter: VodFilter,
+    hiddenCats: Set<Long>,
+): Pair<String, List<Any>> {
+    val args = ArrayList<Any>()
+    val sb = StringBuilder("FROM ${table.table} x ")
+    val where = ArrayList<String>()
+    fun inList(column: String, values: Collection<Long>): String {
+        args.addAll(values)
+        return "$column IN (" + values.joinToString(",") { "?" } + ")"
+    }
+    when (key) {
+        LiveKey.All, LiveKey.Catchup -> {
+            where += inList("x.sourceId", sourceIds)
+            if (hiddenCats.isNotEmpty()) where += "(x.categoryId IS NULL OR NOT " + inList("x.categoryId", hiddenCats) + ")"
+        }
+        is LiveKey.Folder -> { where += "x.categoryId = ?"; args += key.id }
+        LiveKey.Favorites -> {
+            sb.append("INNER JOIN favorites f ON f.itemId = x.id AND f.mediaType = '${table.mediaType}' ")
+            where += "f.profileId = ?"; args += profileId
+            where += inList("x.sourceId", sourceIds)
+        }
+        LiveKey.History -> {
+            sb.append("INNER JOIN watch_history h ON h.itemId = x.id AND h.mediaType = '${table.mediaType}' ")
+            where += "h.profileId = ?"; args += profileId
+            where += inList("x.sourceId", sourceIds)
+        }
+        is LiveKey.Custom -> {
+            sb.append("INNER JOIN custom_category_members m ON m.itemId = x.id AND m.profileId = ? AND m.mediaType = '${table.mediaType}' AND m.contextKey = ? ")
+            args += profileId; args += key.id
+            where += inList("x.sourceId", sourceIds)
+        }
+    }
+    if (query.isNotBlank()) { where += "x.name LIKE '%' || ? || '%'"; args += query }
+    filter.yearFrom?.let { where += "$YEAR_EXPR >= ?"; args += it }
+    filter.yearTo?.let { where += "$YEAR_EXPR <= ?"; args += it }
+    sb.append("WHERE ").append(where.joinToString(" AND "))
+    return sb.toString() to args
 }

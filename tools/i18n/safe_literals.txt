@@ -472,6 +472,42 @@
 1	empty	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	\0
 1	sql	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	$it*
 1	technical	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	[^\\p{L}\\p{Nd}]+
+2	empty	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	\0
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	$YEAR_EXPR <= ?
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	$YEAR_EXPR >= ?
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	$YEAR_EXPR DESC, x.name ASC
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	$column IN (
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	(x.categoryId IS NULL OR NOT
+2	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	)
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	,
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	?
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	AND
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	COALESCE(x.year, x.parsedYear)
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	FROM ${table.table} x
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	INNER JOIN custom_category_members m ON m.itemId = x.id AND m.profileId = ? AND m.mediaType = '${table.mediaType}' AND m.contextKey = ?
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	INNER JOIN favorites f ON f.itemId = x.id AND f.mediaType = '${table.mediaType}'
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	INNER JOIN watch_history h ON h.itemId = x.id AND h.mediaType = '${table.mediaType}'
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	MOVIE
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	SELECT COUNT(*) $from
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	SELECT x.* $from ORDER BY $order
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	SERIES
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	WHERE
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	f.addedAt DESC
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	f.profileId = ?
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	h.profileId = ?
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	h.watchedAt DESC
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	m.position, x.sortOrder, x.name
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	movies
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	series
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	x.addedAt DESC, x.sortOrder DESC, x.id DESC
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	x.categoryId
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	x.categoryId = ?
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	x.name ASC
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	x.name LIKE '%' || ? || '%'
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	x.rating DESC, x.name ASC
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	x.sortOrder ASC, x.name ASC
+4	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	x.sourceId
+1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	x.sourceId ASC, x.sortOrder ASC, x.name ASC
 1	empty	core/src/main/java/tv/own/owntv/core/customize/BulkRenameSession.kt	\0
 1	empty	core/src/main/java/tv/own/owntv/core/customize/CustomizationStore.kt	\0
 1	technical	core/src/main/java/tv/own/owntv/core/customize/CustomizationStore.kt	${c.sourceId}:${c.remoteId ?: c.name}
