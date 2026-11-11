@@ -551,9 +551,13 @@
 3	empty	core/src/main/java/tv/own/owntv/core/content/EpisodeTitles.kt	\0
 1	regex	core/src/main/java/tv/own/owntv/core/content/EpisodeTitles.kt	^(?:S\\d{1,3}\\s*E\\d{1,4}|\\d{1,3}x\\d{1,4})\\b
 1	regex	core/src/main/java/tv/own/owntv/core/content/EpisodeTitles.kt	^[\\s\\-–—:|.·]+
-1	empty	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	\0
-1	sql	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	$it*
-1	technical	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	[^\\p{L}\\p{Nd}]+
+3	empty	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	\0
+2	sql	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	$it*
+1	sql	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	${it[0]}*
+1	sql	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	(${groups[i]})
+1	sql	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	AND
+1	sql	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	OR
+2	technical	core/src/main/java/tv/own/owntv/core/content/SearchReader.kt	[^\\p{L}\\p{Nd}]+
 2	empty	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	\0
 1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	$YEAR_EXPR <= ?
 1	sql	core/src/main/java/tv/own/owntv/core/content/VodQueries.kt	$YEAR_EXPR >= ?
@@ -650,6 +654,7 @@
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/BulkInsertHelper.kt	movies_fts
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/BulkInsertHelper.kt	room_fts_content_sync_${it}_AFTER_INSERT
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/BulkInsertHelper.kt	series_fts
+1	sql	core/src/main/java/tv/own/owntv/core/database/FtsSyntax.kt	SELECT sqlite_compileoption_used('ENABLE_FTS3_PARENTHESIS')
 1	sql	core/src/main/java/tv/own/owntv/core/database/Migration50To51.kt	ALTER TABLE `channels` ADD COLUMN `providerName` TEXT
 1	sql	core/src/main/java/tv/own/owntv/core/database/Migration50To51.kt	ALTER TABLE `sources` ADD COLUMN `channelNameStrip` TEXT
 1	sql	core/src/main/java/tv/own/owntv/core/database/Migration50To51.kt	ALTER TABLE `sources` ADD COLUMN `cleanChannelNames` INTEGER NOT NULL DEFAULT 0
@@ -1247,8 +1252,10 @@
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	SELECT * FROM downloads WHERE profileId = :profileId ORDER BY createdAt DESC
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	SELECT * FROM downloads WHERE status = :status ORDER BY createdAt ASC
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	SELECT * FROM downloads WHERE status IN ('QUEUED', 'RUNNING') ORDER BY createdAt ASC
+1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	SELECT COUNT(*) FROM downloads WHERE filePath = :filePath COLLATE NOCASE AND NOT (mediaType = :mediaType AND itemId = :itemId)
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	SELECT COUNT(*) FROM downloads WHERE profileId = :profileId
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	SELECT d.* FROM downloads d INNER JOIN episodes e ON e.id = d.itemId
+1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	SELECT filePath FROM downloads WHERE mediaType = :mediaType AND itemId = :itemId AND filePath IS NOT NULL
 1	sql	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	UPDATE downloads SET status = :status, downloadedBytes = :downloaded, totalBytes = :total,
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	WHERE d.mediaType = 'EPISODE' AND e.seriesId = :seriesId
 1	sql	core/src/main/java/tv/own/owntv/core/database/dao/DownloadDao.kt	updatedAt = :timestamp, reason = :reason, httpCode = :httpCode WHERE id = :id
@@ -1876,6 +1883,8 @@
 1	protocol	core/src/main/java/tv/own/owntv/core/download/DownloadEngine.kt	bytes=$from-${to ?: ""}
 2	log	core/src/main/java/tv/own/owntv/core/download/DownloadEngine.kt	download attempt $attempt/$MAX_ATTEMPTS failed id=$id: ${e.message}
 1	log	core/src/main/java/tv/own/owntv/core/download/DownloadEngine.kt	download target unavailable id=$id path=${d.filePath}
+1	file-path	core/src/main/java/tv/own/owntv/core/download/DownloadManager.kt	$fileName [$itemId]
+1	file-path	core/src/main/java/tv/own/owntv/core/download/DownloadManager.kt	${fileName.substring(0, dot)} [$itemId]${fileName.substring(dot)}
 1	log	core/src/main/java/tv/own/owntv/core/download/DownloadManager.kt	DownloadManager
 1	log	core/src/main/java/tv/own/owntv/core/download/DownloadManager.kt	cannot create download target in ${root.stored} for $fileName
 1	technical	core/src/main/java/tv/own/owntv/core/download/DownloadNotifications.kt	$effectiveLocale:${localized.getString(R.string.common_nav_downloads)}
@@ -5133,6 +5142,7 @@
 1	log	core/src/main/java/tv/own/owntv/core/sync/XtreamSyncer.kt	$label bulk truncated sourceId=${s.id} itemsBeforeCutoff=$truncatedAt — recovering per-category
 1	log	core/src/main/java/tv/own/owntv/core/sync/XtreamSyncer.kt	$label categories fetched sourceId=${s.id} count=${cats.size} ms=${SystemClock.elapsedRealtime() - categoriesStart}
 1	log	core/src/main/java/tv/own/owntv/core/sync/XtreamSyncer.kt	$label categories refreshed sourceId=${s.id} mapped=${categories.idsByRemoteId.size} ms=${SystemClock.elapsedRealtime() - refreshStart}
+1	log	core/src/main/java/tv/own/owntv/core/sync/XtreamSyncer.kt	$label category list came back empty sourceId=${s.id} — keeping the ${stored.size} stored
 1	technical	core/src/main/java/tv/own/owntv/core/sync/XtreamSyncer.kt	$label fallback
 1	log	core/src/main/java/tv/own/owntv/core/sync/XtreamSyncer.kt	$label fallback categories begin count=${categories.size} bulkPartial=$bulkPartial currentUnique=${total[0]}
 1	log	core/src/main/java/tv/own/owntv/core/sync/XtreamSyncer.kt	$label fallback categories end totalUnique=${total[0]} truncations=$truncations
@@ -5405,6 +5415,7 @@
 1	log	core/src/main/java/tv/own/owntv/core/sync/work/EpgSyncScheduler.kt	epg-sync
 1	technical	core/src/main/java/tv/own/owntv/core/sync/work/EpgSyncScheduler.kt	epg-sync-source-$sourceId
 1	log	core/src/main/java/tv/own/owntv/core/sync/work/EpgSyncWorker.kt	EPG sync cancelled sourceId=${source.id} reason=$reason
+1	log	core/src/main/java/tv/own/owntv/core/sync/work/EpgSyncWorker.kt	EPG sync cut short sourceId=${source.id} reason=$reason programmes=$programmes attempt=$runAttemptCount — will retry
 1	log	core/src/main/java/tv/own/owntv/core/sync/work/EpgSyncWorker.kt	EPG sync failed sourceId=${source.id} reason=$reason
 1	log	core/src/main/java/tv/own/owntv/core/sync/work/EpgSyncWorker.kt	EPG sync failed transiently sourceId=${source.id} reason=$reason attempt=$runAttemptCount — will retry
 1	log	core/src/main/java/tv/own/owntv/core/sync/work/EpgSyncWorker.kt	EPG sync finished sourceId=${source.id} reason=$reason programmes=$programmes ms=${SystemClock.elapsedRealtime() - startedAt}
