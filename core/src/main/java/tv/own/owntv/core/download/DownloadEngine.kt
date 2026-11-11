@@ -88,7 +88,19 @@ class DownloadEngine(
      */
     val singleStreamBusy: StateFlow<Set<Long>> = _singleStreamBusy.asStateFlow()
 
+    /**
+     * Rows the running drain has already looked at, so one that stays pending (it waits for the
+     * watching to stop) is not picked again in a tight loop.
+     *
+     * Poterx: held here rather than inside [drainQueue] so [markQueued] can empty it. It used to
+     * live for the whole drain, and a row that came back to the queue while another download was
+     * still running — resumed, retried, or freed by the watching having stopped — was passed over
+     * until the drain ended, with nothing left to start it afterwards: it sat at "queued".
+     */
+    private val taken = Collections.newSetFromMap(ConcurrentHashMap<Long, Boolean>())
+
     fun markQueued() {
+        taken.clear()
         queueDirty = true
     }
 
@@ -101,16 +113,16 @@ class DownloadEngine(
         // Every progress report also feeds the shell's status pill, so a transfer is visible in the
         // app and not only in the notification shade.
         val report: (DownloadProgress) -> Unit = { activityTracker.progress(it); onProgress(it) }
-        val seen = mutableSetOf<Long>()
+        taken.clear()
         while (currentCoroutineContext().isActive) {
             queueDirty = false
-            val next = downloadDao.pending().firstOrNull { it.id !in suppressed && it.id !in seen }
+            val next = downloadDao.pending().firstOrNull { it.id !in suppressed && it.id !in taken }
             if (next == null) {
                 // Something was queued between the read above and now: look again rather than exit,
                 // otherwise the kick that follows it would be dropped by ExistingWorkPolicy.KEEP.
                 if (queueDirty) continue else return@coroutineScope
             }
-            seen += next.id
+            taken += next.id
             // A one-stream playlist that is being watched: starting would cut the picture off. It
             // waits, and [DownloadManager] kicks the queue again when the watching stops.
             if (waitsForWatching(next)) {

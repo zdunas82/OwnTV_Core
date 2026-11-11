@@ -75,13 +75,21 @@ class EpgSyncWorker(
                 progress.publish(channels, count)
             }
             progress.flush()
-            store.setSynced(source.id, System.currentTimeMillis(), null)
+            // Poterx: a download cut off part-way keeps what it fetched but is not a finished sync.
+            // Stamping it as one left the guide short until the next scheduled refresh; it is tried
+            // again with the usual backoff, and only the last attempt settles for the part it has.
+            val retryCutShort = shouldRetryCutShortEpgSync(epgRepository.lastRefreshCutShort(source.id), runAttemptCount)
+            if (!retryCutShort) store.setSynced(source.id, System.currentTimeMillis(), null)
             // A series rule is a standing instruction about programmes that do not exist in the
             // database until the guide mentioning them is fetched — so this is the moment "record
             // every showing" becomes actual timers. Best-effort: a rule that could not be
             // applied is re-applied on the next refresh, and it must never fail the EPG sync.
             runCatching { recordings.applyRules() }
                 .onFailure { Log.w(TAG, "series rules not applied after EPG sync: ${it.message}") }
+            if (retryCutShort) {
+                Log.w(TAG, "EPG sync cut short sourceId=${source.id} reason=$reason programmes=$programmes attempt=$runAttemptCount — will retry")
+                return Result.retry()
+            }
             Log.i(
                 TAG,
                 "EPG sync finished sourceId=${source.id} reason=$reason programmes=$programmes ms=${SystemClock.elapsedRealtime() - startedAt}",
@@ -228,3 +236,10 @@ internal fun shouldRetryEpgSync(error: Throwable, online: Boolean, runAttemptCou
     val transient = error is java.io.IOException || isTransientSyncError(error.message, online)
     return transient && runAttemptCount < MAX_EPG_RETRY_ATTEMPTS
 }
+
+/**
+ * Poterx: whether a guide download that was cut off part-way — it kept what it fetched and returned
+ * normally — gets another attempt, within the same budget as a failed one.
+ */
+internal fun shouldRetryCutShortEpgSync(cutShort: Boolean, runAttemptCount: Int): Boolean =
+    cutShort && runAttemptCount < MAX_EPG_RETRY_ATTEMPTS

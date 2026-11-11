@@ -234,7 +234,18 @@ internal class XtreamSyncer(
         val cats = p.fetchCategories(SyncSupport.IgnoreByteProgress)
         Log.d(TAG, "$label categories fetched sourceId=${s.id} count=${cats.size} ms=${SystemClock.elapsedRealtime() - categoriesStart}")
         val refreshStart = SystemClock.elapsedRealtime()
-        val categories = support.refreshCategories(s, p.type, cats, stats)
+        // Poterx: a panel in trouble answers the category call with an empty list or an error object,
+        // which reads as "no categories" — and the pass then stored every item without its category
+        // and deleted the categories themselves (the shrink guard lets tables of up to 100 rows go),
+        // taking the hidden, locked and kids choices keyed on them out of action until the next good
+        // sync. A re-sync handed nothing keeps what is stored instead.
+        val categories = if (categoryListLost(freshSource, cats.size, stats.forcePrune)) {
+            val stored = support.categoryRemoteIds(s.id, p.type)
+            Log.w(TAG, "$label category list came back empty sourceId=${s.id} — keeping the ${stored.size} stored")
+            CategoryRefresh(support.categoryIdsByRemoteId(s.id, p.type, stored.toList()), stored)
+        } else {
+            support.refreshCategories(s, p.type, cats, stats)
+        }
         Log.d(TAG, "$label categories refreshed sourceId=${s.id} mapped=${categories.idsByRemoteId.size} ms=${SystemClock.elapsedRealtime() - refreshStart}")
         // Category remote ids the bulk list actually referenced, so a category it skipped entirely can
         // be asked for directly before anything is pruned.
@@ -517,6 +528,14 @@ internal class XtreamSyncer(
             seenRemoteIds: Set<String>,
         ): List<XtCategory> =
             if (seenRemoteIds.isEmpty()) emptyList() else categories.filter { it.id !in seenRemoteIds }
+
+        /**
+         * Poterx: true when a re-sync was handed no categories at all and should keep the stored ones.
+         * A first import has nothing to keep, and a sync the user forced clean ([forcePrune]) takes
+         * the panel at its word, as it does for everything else.
+         */
+        internal fun categoryListLost(freshSource: Boolean, fetched: Int, forcePrune: Boolean): Boolean =
+            !freshSource && fetched == 0 && !forcePrune
 
         /**
          * Fails the sync when the panel answered `user_info.auth: 0`. A panel that rejects the

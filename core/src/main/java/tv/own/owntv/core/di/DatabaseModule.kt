@@ -83,6 +83,10 @@ val databaseModule = module {
                     val engineVersion = runCatching {
                         connection.prepare("SELECT sqlite_version()").use { if (it.step()) it.getText(0) else "?" }
                     }.getOrDefault("?")
+                    // Poterx: the search writes its OR groups to suit this build's FTS syntax.
+                    tv.own.owntv.core.database.FtsSyntax.parenthesised = runCatching {
+                        connection.prepare(tv.own.owntv.core.database.FtsSyntax.PROBE).use { it.step() && it.getLong(0) != 0L }
+                    }.getOrDefault(false)
                     val healed = runCatching { OwnTVDatabase.healSchemaIfDrifted(connection) }.getOrDefault(false)
                     // The stamp is not optional. Under a driver, a Callback.onOpen written against
                     // the old Support type is silently skipped — no exception, nothing in CI, and

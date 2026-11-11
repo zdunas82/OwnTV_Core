@@ -45,6 +45,18 @@ interface DownloadDao {
     @Query("SELECT COUNT(*) FROM downloads WHERE profileId = :profileId")
     fun count(profileId: Long): Flow<Int>
 
+    /**
+     * Poterx: how many downloads of OTHER titles are written to [filePath]. The same title queued by
+     * a second profile shares its file and is not counted. Names that differ only in the case of
+     * their letters count as one: on the box's shared storage they are one file.
+     */
+    @Query("SELECT COUNT(*) FROM downloads WHERE filePath = :filePath COLLATE NOCASE AND NOT (mediaType = :mediaType AND itemId = :itemId)")
+    suspend fun othersAt(filePath: String, mediaType: tv.own.owntv.core.model.MediaType, itemId: Long): Int
+
+    /** Poterx: the files this title's downloads are written to, on every profile. */
+    @Query("SELECT filePath FROM downloads WHERE mediaType = :mediaType AND itemId = :itemId AND filePath IS NOT NULL")
+    suspend fun pathsOf(mediaType: tv.own.owntv.core.model.MediaType, itemId: Long): List<String>
+
     /** Every status change also sets the row's reason, so an old failure never outlives a retry. */
     @Query(
         "UPDATE downloads SET status = :status, downloadedBytes = :downloaded, totalBytes = :total, " +

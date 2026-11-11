@@ -306,6 +306,17 @@ class EpgRepository(
         return refreshUrl(source.id, url, source.userAgent, onProgress)
     }
 
+    // Poterx: feeds whose last download stopped part-way and kept what it had.
+    private val cutShort: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * Poterx: true when the last [refreshUrl] of [storeId] lost its connection part-way and returned
+     * normally with the part it had. That return looks like a finished sync, so it was stamped as
+     * one and the missing days waited for the next scheduled refresh. The callers ask here and try
+     * again sooner instead.
+     */
+    fun lastRefreshCutShort(storeId: Long): Boolean = storeId in cutShort
+
     /**
      * Download [url] (XMLTV, gzip-aware) into the guide tables keyed by [storeId], keeping only the
      * rolling window. Used for standalone EPG sources (negative ids). Throws on network/parse failure.
@@ -319,6 +330,7 @@ class EpgRepository(
         // A portal guide is not a download, so it cannot go through the XMLTV path below — but it is
         // stored, pruned, matched and read exactly like one, which is why it is addressed as a URL
         // and lives in the same EPG-source list with the same "sync now" button and error line.
+        cutShort.remove(storeId)
         stalkerSourceIdOf(url)?.let { portalSourceId ->
             return@withContext refreshFromPortal(storeId, portalSourceId, onProgress)
         }
@@ -498,6 +510,10 @@ class EpgRepository(
             // Network drop or an unrecoverable parse position. Keep whatever we already pulled — a partial
             // guide beats none — and only fail outright if we got nothing at all.
             if (writtenCount == 0 && buffer.isEmpty() && channels.isEmpty()) throw e
+            // Poterx: a connection lost part-way is worth another go soon, and the caller is told
+            // (lastRefreshCutShort). A feed that cannot be parsed past some point would stop at the
+            // same place again, so that one is left as it was.
+            if (e is java.io.IOException) cutShort.add(storeId)
             if (buffer.isNotEmpty()) {
                 val batchSize = buffer.size
                 storeProgrammes(buffer.toList())

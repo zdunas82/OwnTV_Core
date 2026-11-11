@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import tv.own.owntv.core.database.dao.DownloadDao
 import tv.own.owntv.core.database.entity.DownloadEntity
@@ -19,6 +20,23 @@ import tv.own.owntv.core.storage.MediaRoot
 import tv.own.owntv.core.storage.MediaTarget
 import tv.own.owntv.core.storage.StorageAccess
 import tv.own.owntv.core.settings.SettingsRepository
+
+/**
+ * Poterx: the file name for a title whose plain name already belongs to another download:
+ * "Dune.mkv" becomes "Dune [1234].mkv". The id keeps it apart from every other title.
+ */
+internal fun downloadNameWithId(fileName: String, itemId: Long): String {
+    val dot = fileName.lastIndexOf('.')
+    return if (dot > 0) "${fileName.substring(0, dot)} [$itemId]${fileName.substring(dot)}" else "$fileName [$itemId]"
+}
+
+/**
+ * Poterx: true when one of the title's own downloads ([ownPaths]) is already written under the name
+ * that carries its id. A path on a mounted volume ends with [nameWithId] as it is; a picked folder
+ * is addressed by a URI, which ends with the same name percent-encoded ([encodedNameWithId]).
+ */
+internal fun keepsNameWithId(ownPaths: List<String>, nameWithId: String, encodedNameWithId: String): Boolean =
+    ownPaths.any { it.endsWith(nameWithId) || it.endsWith(encodedNameWithId) }
 
 /** Free/total bytes of the volume backing the download root. */
 data class DownloadStorageInfo(
@@ -45,6 +63,10 @@ class DownloadManager(
     private val watchSession: tv.own.owntv.core.live.WatchSession,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // Poterx: a season queued in one go asks for all its files at once; they are named one at a time,
+    // so two of them cannot both find the same name free.
+    private val naming = kotlinx.coroutines.sync.Mutex()
 
     init {
         // Anything left QUEUED — or RUNNING when the process was killed — is picked up again.
@@ -108,17 +130,32 @@ class DownloadManager(
         scope.launch {
             if (!settings.downloadsAllowed(profileId).first()) return@launch
             val root = MediaRoot.of(context, settings.downloadRoot.first())
-            val target = root.child(relativeDir, fileName)
-            if (target == null) {
-                android.util.Log.w(TAG, "cannot create download target in ${root.stored} for $fileName")
+            naming.withLock {
+                // Poterx: two films with one name (or two episodes of a season) were given one file, and
+                // each download wrote over the other. The one queued later carries its id in the name,
+                // and keeps it for as long as one of its downloads is written under that name: queued
+                // again, or by a second profile, it goes on with the same file.
+                val withId = downloadNameWithId(fileName, itemId)
+                val keepsId = keepsNameWithId(
+                    runCatching { downloadDao.pathsOf(mediaType, itemId) }.getOrDefault(emptyList()),
+                    withId, android.net.Uri.encode(withId),
+                )
+                var target = root.child(relativeDir, if (keepsId) withId else fileName)
+                val taken = !keepsId && target?.stored?.let { path ->
+                    runCatching { downloadDao.othersAt(path, mediaType, itemId) }.getOrDefault(0) > 0
+                } == true
+                if (taken) target = root.child(relativeDir, withId)
+                if (target == null) {
+                    android.util.Log.w(TAG, "cannot create download target in ${root.stored} for $fileName")
+                }
+                downloadDao.upsert(
+                    DownloadEntity(
+                        profileId = profileId, mediaType = mediaType, itemId = itemId, title = title,
+                        posterUrl = posterUrl, streamUrl = streamUrl, filePath = target?.stored,
+                        status = DownloadStatus.QUEUED,
+                    ),
+                )
             }
-            downloadDao.upsert(
-                DownloadEntity(
-                    profileId = profileId, mediaType = mediaType, itemId = itemId, title = title,
-                    posterUrl = posterUrl, streamUrl = streamUrl, filePath = target?.stored,
-                    status = DownloadStatus.QUEUED,
-                ),
-            )
             kick()
         }
     }

@@ -1,11 +1,13 @@
 package tv.own.owntv.core.content
 
 import androidx.compose.runtime.Immutable
+import java.util.Locale
 import kotlinx.coroutines.flow.first
 import tv.own.owntv.core.customize.CustomizationStore
 import tv.own.owntv.core.customize.CustomizeKeys
 import tv.own.owntv.core.customize.SectionCustomizations
 import tv.own.owntv.core.customize.sealsItemIn
+import tv.own.owntv.core.database.FtsSyntax
 import tv.own.owntv.core.database.dao.CategoryDao
 import tv.own.owntv.core.database.dao.ChannelDao
 import tv.own.owntv.core.database.dao.ChannelSearchResult
@@ -101,7 +103,8 @@ class SearchReader(
         limit: Int = MATCH_LIMIT,
     ): SearchResults {
         if (profileId < 0 || !sources.hasAny) return SearchResults()
-        val fts = ftsQuery(query)
+        // Poterx: was ftsQuery(query) — see ftsQueryAnyCase for what that missed.
+        val fts = ftsQueryAnyCase(query, FtsSyntax.parenthesised)
         val custLive = customize.observeVisible(profileId, MediaType.LIVE).first()
         val custMovie = customize.observeVisible(profileId, MediaType.MOVIE).first()
         val custSeries = customize.observeVisible(profileId, MediaType.SERIES).first()
@@ -293,6 +296,48 @@ class SearchReader(
             val tokens = query.split(Regex("[^\\p{L}\\p{Nd}]+")).filter { it.isNotEmpty() }
             if (tokens.isEmpty()) return null
             return tokens.joinToString(" ") { "$it*" }
+        }
+
+        /**
+         * Poterx: [ftsQuery] with every word that has a letter outside ASCII also tried in its other
+         * cases.
+         *
+         * The index folds the case of ASCII letters only, so "Ścigany" is stored with its capital and
+         * a typed "ścigany" never met it — on a remote, where nobody types capitals, every title
+         * beginning with Ś, Ż, Ł, Ó, Ć or Ź was out of reach. Such a word becomes an OR of the forms
+         * it can be stored in ("ścigany* OR Ścigany*"); a word of plain ASCII letters is written
+         * exactly as [ftsQuery] writes it. What this does not do is find "Ścigany" for "scigany":
+         * that needs the index itself rebuilt without the marks.
+         *
+         * [parenthesised] is [FtsSyntax.parenthesised]: several words, at least one with an OR, read
+         * differently in the two FTS syntaxes, so they are written for the one in use.
+         */
+        fun ftsQueryAnyCase(query: String, parenthesised: Boolean): String? {
+            val words = query.split(Regex("[^\\p{L}\\p{Nd}]+")).filter { it.isNotEmpty() }.map { storedForms(it) }
+            if (words.isEmpty()) return null
+            if (words.all { it.size == 1 }) return words.joinToString(" ") { "${it[0]}*" }
+            val groups = words.map { forms -> forms.joinToString(" OR ") { "$it*" } }
+            if (groups.size == 1) return groups[0]
+            return if (parenthesised) {
+                words.indices.joinToString(" AND ") { i -> if (words[i].size > 1) "(${groups[i]})" else groups[i] }
+            } else {
+                // The standard syntax binds OR tighter than the unwritten AND between words.
+                groups.joinToString(" ")
+            }
+        }
+
+        /**
+         * The forms a typed word can have in the index: as typed, lower case, capitalised and upper
+         * case, each with its ASCII letters lowered the way the tokenizer lowers them (so "ŻÓŁW" is
+         * "ŻÓŁw") and the repeats dropped. A word of ASCII letters has one form: itself, untouched.
+         */
+        private fun storedForms(word: String): List<String> {
+            if (word.all { it.code < 0x80 }) return listOf(word)
+            val lower = word.lowercase(Locale.ROOT)
+            val capitalised = lower.replaceFirstChar { it.titlecase(Locale.ROOT) }
+            return listOf(word, lower, capitalised, word.uppercase(Locale.ROOT))
+                .map { form -> buildString(form.length) { form.forEach { c -> append(if (c in 'A'..'Z') c + 32 else c) } } }
+                .distinct()
         }
     }
 }
