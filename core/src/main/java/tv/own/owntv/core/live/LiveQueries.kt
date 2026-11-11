@@ -38,7 +38,14 @@ fun livePagingSource(
     val playlist = sort == SettingsRepository.SortMode.PLAYLIST
     return if (query.isBlank()) {
         when (key) {
-            LiveKey.All -> if (playlist) channelDao.pagingAllOriginal(ids) else channelDao.pagingAll(ids)
+            // Poterx: All Channels has a manual order of its own once a channel was moved in it;
+            // until then it stays on the plain indexed queries, the same fast path a folder takes.
+            LiveKey.All -> when {
+                hasManualOrder(ContentOrderEntity.ALL_CONTEXT) ->
+                    channelDao.pagingAllManual(ids, profileId, ContentOrderEntity.ALL_CONTEXT, alpha = !playlist)
+                playlist -> channelDao.pagingAllOriginal(ids)
+                else -> channelDao.pagingAll(ids)
+            }
             LiveKey.Favorites -> channelDao.pagingFavoritesManual(profileId, ContentOrderEntity.FAV_CONTEXT, ids)
             LiveKey.History -> channelDao.pagingHistory(profileId, ids)
             LiveKey.Catchup -> if (playlist) channelDao.pagingCatchupOriginal(ids) else channelDao.pagingCatchup(ids)

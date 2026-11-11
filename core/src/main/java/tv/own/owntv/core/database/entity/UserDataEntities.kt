@@ -103,6 +103,10 @@ data class ContentOrderEntity(
     companion object {
         /** Sentinel [contextKey] for the per-section Favorites list. */
         const val FAV_CONTEXT = "__fav__"
+
+        /** Poterx: sentinel [contextKey] for Live TV's "All channels" list. Moved channels only, as in a
+         *  folder; like [FAV_CONTEXT] it has no source prefix, so backup and re-sync carry it unchanged. */
+        const val ALL_CONTEXT = "__all__"
     }
 }
 

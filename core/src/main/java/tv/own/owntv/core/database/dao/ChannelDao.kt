@@ -25,6 +25,15 @@ data class ChannelGuideKey(
     val epgChannelId: String,
 )
 
+/** Poterx: one row of [ChannelDao.observeAllOrderManual], the rows standing in the order of "All
+ *  channels". [providerRank] is the channel's place (from 1) in the playlist's own order, so the
+ *  i-th row's number can be read off the channel whose rank is i. */
+data class ChannelOrderRow(
+    val id: Long,
+    val number: Int?,
+    val providerRank: Int,
+)
+
 /** A channel plus when it was last watched — for the Home screen's recent/continue rows. */
 data class ChannelWithWatchedAt(
     @Embedded val channel: ChannelEntity,
@@ -328,6 +337,50 @@ interface ChannelDao {
             "SELECT c.* FROM channels c INNER JOIN slots sl ON sl.id = c.id ORDER BY sl.slot, sl.grp, sl.tie LIMIT :limit",
     )
     suspend fun snapshotByCategoryManual(categoryId: Long, profileId: Long, contextKey: String, alpha: Boolean, limit: Int): List<ChannelEntity>
+
+    // --- Poterx: "All channels" in manual order. The folder query above with the playlists as the
+    //     scope: a moved channel keeps its saved position, the rest follow A–Z or the playlist order
+    //     (sourceId, sortOrder, name — what pagingAllOriginal gives) around it. ---
+    @Query(
+            "WITH base AS (SELECT c.id AS id, c.sourceId AS sid, c.sortOrder AS so, c.name AS nm, o.position AS pos " +
+            "FROM channels c " +
+            "LEFT JOIN content_order o ON o.itemId = c.id AND o.profileId = :profileId AND o.mediaType = 'LIVE' AND o.contextKey = :contextKey " +
+            "WHERE c.sourceId IN (:sourceIds)), " +
+            "slots AS (SELECT id, pos - (ROW_NUMBER() OVER (ORDER BY pos, id) - 1) AS slot, 0 AS grp, pos AS tie FROM base WHERE pos IS NOT NULL " +
+            "UNION ALL SELECT id, ROW_NUMBER() OVER (ORDER BY CASE WHEN :alpha THEN nm END, sid, so, nm, id) - 1 AS slot, 1 AS grp, 0 AS tie FROM base WHERE pos IS NULL) " +
+            "SELECT c.* FROM channels c INNER JOIN slots sl ON sl.id = c.id ORDER BY sl.slot, sl.grp, sl.tie",
+    )
+    fun pagingAllManual(sourceIds: List<Long>, profileId: Long, contextKey: String, alpha: Boolean): PagingSource<Int, ChannelEntity>
+
+    /** Bounded snapshot of [pagingAllManual] — the Move session, CH+/CH− and the guide's row order. */
+    @Query(
+            "WITH base AS (SELECT c.id AS id, c.sourceId AS sid, c.sortOrder AS so, c.name AS nm, o.position AS pos " +
+            "FROM channels c " +
+            "LEFT JOIN content_order o ON o.itemId = c.id AND o.profileId = :profileId AND o.mediaType = 'LIVE' AND o.contextKey = :contextKey " +
+            "WHERE c.sourceId IN (:sourceIds)), " +
+            "slots AS (SELECT id, pos - (ROW_NUMBER() OVER (ORDER BY pos, id) - 1) AS slot, 0 AS grp, pos AS tie FROM base WHERE pos IS NOT NULL " +
+            "UNION ALL SELECT id, ROW_NUMBER() OVER (ORDER BY CASE WHEN :alpha THEN nm END, sid, so, nm, id) - 1 AS slot, 1 AS grp, 0 AS tie FROM base WHERE pos IS NULL) " +
+            "SELECT c.* FROM channels c INNER JOIN slots sl ON sl.id = c.id ORDER BY sl.slot, sl.grp, sl.tie LIMIT :limit",
+    )
+    suspend fun snapshotAllManual(sourceIds: List<Long>, profileId: Long, contextKey: String, alpha: Boolean, limit: Int): List<ChannelEntity>
+
+    /** The whole of [pagingAllManual] as three columns a row, re-emitted when a channel or a saved
+     *  position changes — what numbering the channels by their place in the list works from. */
+    @Query(
+            "WITH base AS (SELECT c.id AS id, c.sourceId AS sid, c.sortOrder AS so, c.name AS nm, o.position AS pos " +
+            "FROM channels c " +
+            "LEFT JOIN content_order o ON o.itemId = c.id AND o.profileId = :profileId AND o.mediaType = 'LIVE' AND o.contextKey = :contextKey " +
+            "WHERE c.sourceId IN (:sourceIds)), " +
+            "slots AS (SELECT id, pos - (ROW_NUMBER() OVER (ORDER BY pos, id) - 1) AS slot, 0 AS grp, pos AS tie FROM base WHERE pos IS NOT NULL " +
+            "UNION ALL SELECT id, ROW_NUMBER() OVER (ORDER BY CASE WHEN :alpha THEN nm END, sid, so, nm, id) - 1 AS slot, 1 AS grp, 0 AS tie FROM base WHERE pos IS NULL) " +
+            "SELECT c.id AS id, c.number AS number, ROW_NUMBER() OVER (ORDER BY c.sourceId, c.sortOrder, c.name, c.id) AS providerRank " +
+            "FROM channels c INNER JOIN slots sl ON sl.id = c.id ORDER BY sl.slot, sl.grp, sl.tie",
+    )
+    fun observeAllOrderManual(sourceIds: List<Long>, profileId: Long, contextKey: String, alpha: Boolean): Flow<List<ChannelOrderRow>>
+
+    /** Whether a channel was ever moved in this list — asked before paying for the queries above. */
+    @Query("SELECT EXISTS(SELECT 1 FROM content_order WHERE profileId = :profileId AND mediaType = 'LIVE' AND contextKey = :contextKey)")
+    suspend fun hasManualOrder(profileId: Long, contextKey: String): Boolean
 
     /** Bounded snapshot across all of a profile's playlists, in provider order — the in-player zap /
      *  channel-list fallback for a channel that has no category of its own. */
