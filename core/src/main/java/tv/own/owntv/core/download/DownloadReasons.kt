@@ -50,6 +50,11 @@ object DownloadReasons {
     }
 }
 
-/** A transfer attempt that failed for a reason the row should show. */
-internal class DownloadFailure(val reason: DownloadReason, val httpCode: Int? = null) :
+/**
+ * A transfer attempt that failed for a reason the row should show.
+ *
+ * Poterx: [turnedAway] marks a 2xx answer that was not the file — the way some panels say "not now"
+ * ([DownloadAnswers]). It is handled like a busy account: no more connections, a longer wait.
+ */
+internal class DownloadFailure(val reason: DownloadReason, val httpCode: Int? = null, val turnedAway: Boolean = false) :
     java.io.IOException("download failed: $reason${httpCode?.let { " (HTTP $it)" } ?: ""}")

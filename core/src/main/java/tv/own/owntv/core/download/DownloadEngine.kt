@@ -194,6 +194,7 @@ class DownloadEngine(
         var last: DownloadFailure? = null
         while (currentCoroutineContext().isActive) {
             attempt++
+            val before = bytesSoFar(target)
             val done = try {
                 attemptDownload(id, d, target, onProgress)
             } catch (e: CancellationException) {
@@ -209,6 +210,8 @@ class DownloadEngine(
             }
             if (done) return
             if (!currentCoroutineContext().isActive) return // paused/deleted — status already set by caller
+            // Poterx: an attempt that added to the file does not use up one of the three tries.
+            attempt = DownloadAnswers.attemptAfter(attempt, before, bytesSoFar(target))
             // The drive, not the network: another attempt would stop at the same byte.
             val driveFull = last?.reason == DownloadReason.NO_SPACE || last?.reason == DownloadReason.FILE_TOO_LARGE
             if (attempt >= MAX_ATTEMPTS || driveFull) {
@@ -217,7 +220,8 @@ class DownloadEngine(
             }
             // A busy account frees its slot on the provider's clock, not ours — often only some
             // seconds after the other stream stopped. Short retries just collect three refusals.
-            val wait = if (last?.reason == DownloadReason.ACCOUNT_BUSY) BUSY_RETRY_DELAY_MS else RETRY_DELAY_MS
+            // Poterx: a page sent instead of the file is the same "not now" without the status code.
+            val wait = if (last?.reason == DownloadReason.ACCOUNT_BUSY || last?.turnedAway == true) BUSY_RETRY_DELAY_MS else RETRY_DELAY_MS
             delay(wait * attempt)
             // Playback may have opened on a one-stream playlist while this waited: then the next
             // attempt would take the picture's only stream. Wait for the watching to stop instead.
@@ -286,10 +290,26 @@ class DownloadEngine(
         val append = resp.code == 206 && existing > 0 // server honoured the Range
         val total = DownloadResume.expectedTotal(append, existing, body.contentLength())
         var done = if (append) existing else 0L
-        downloadDao.updateProgress(id, DownloadStatus.RUNNING, done, total, System.currentTimeMillis(), null, null)
-        onProgress(DownloadProgress(id, d.title, done, total))
         body.byteStream().use { input ->
+            // Poterx: a body that is about to replace the file is looked at before the file is touched.
+            // A provider's error page sent as "200 OK" used to wipe the partial file and be shown as
+            // a finished download ([DownloadAnswers]). A body appended after a 206 is a range of the
+            // file by definition and may well be short, so that one is not looked at.
+            val head = ByteArray(if (append) 0 else DownloadAnswers.HEAD_BYTES)
+            var headBytes = 0
+            while (headBytes < head.size) {
+                val n = input.read(head, headBytes, head.size - headBytes)
+                if (n < 0) break
+                headBytes += n
+            }
+            if (!append && DownloadAnswers.isPage(head, headBytes, ended = headBytes < head.size)) {
+                throw DownloadFailure(DownloadReason.HTTP_ERROR, turnedAway = true)
+            }
+            downloadDao.updateProgress(id, DownloadStatus.RUNNING, done, total, System.currentTimeMillis(), null, null)
+            onProgress(DownloadProgress(id, d.title, done, total))
             target.openOutput(append).use { out ->
+                out.write(head, 0, headBytes)
+                done += headBytes
                 val buf = ByteArray(BUFFER_BYTES)
                 var lastTick = 0L
                 while (true) {
@@ -346,14 +366,28 @@ class DownloadEngine(
 
         fun moreToFetch() = retry.isNotEmpty() || next.get() < total
 
-        /** The next block to fetch, or null when every block is taken. */
-        fun takeBlock(): Long? = retry.pollFirst() ?: next.getAndAdd(BLOCK_BYTES).takeIf { it < total }
+        /**
+         * The next block to fetch, or null when every block is taken.
+         *
+         * Never run far ahead of what is written: memory, not the network, is the limit there.
+         *
+         * Poterx: a block given back by a failed connection is taken at once, by a waiting worker
+         * too. Upstream waited first and looked second. The writer stands at the block that was given
+         * back, the blocks after it fill the memory allowance, so every connection left waited for
+         * room that could only come from that block: the download stood still at its percentage,
+         * "downloading" over no connection at all.
+         */
+        suspend fun takeBlock(): Long? {
+            while (true) {
+                retry.pollFirst()?.let { return it }
+                if (ready.size < workers.size + AHEAD_BLOCKS) return next.getAndAdd(BLOCK_BYTES).takeIf { it < total }
+                delay(20)
+            }
+        }
 
         fun startWorker() {
             workers += launch(Dispatchers.IO) {
                 while (isActive) {
-                    // Never run far ahead of what is written: memory, not the network, is the limit there.
-                    while (isActive && ready.size >= workers.size + AHEAD_BLOCKS) delay(20)
                     val start = takeBlock() ?: return@launch
                     try {
                         ready[start] = fetchBlock(resolved, start, minOf(start + BLOCK_BYTES, total))
@@ -364,7 +398,8 @@ class DownloadEngine(
                         retry.addFirst(start)
                         lastError = e
                         // The provider said no to this connection: hold at what is left, ask for no more.
-                        if (e.reason == DownloadReason.ACCOUNT_BUSY || e.reason == DownloadReason.REFUSED) ramp.stop()
+                        // Poterx: so is a page sent instead of the block.
+                        if (e.reason == DownloadReason.ACCOUNT_BUSY || e.reason == DownloadReason.REFUSED || e.turnedAway) ramp.stop()
                         return@launch
                     } catch (e: Exception) {
                         retry.addFirst(start)
@@ -430,8 +465,11 @@ class DownloadEngine(
         client.newCall(request(resolved, start, end - 1)).execute().use { resp ->
             if (!resp.isSuccessful) throw DownloadFailure(DownloadReasons.ofHttp(resp.code), resp.code)
             // A 200, or a range starting elsewhere, would put the wrong bytes in this block.
+            // Poterx: the server served this very file in ranges a moment ago, so this is the
+            // provider turning the connection away ([DownloadAnswers]) — without the status code on
+            // the row, where "HTTP 200" beside a failure only puzzles.
             val from = resp.header("Content-Range")?.substringAfter("bytes", "")?.trim()?.substringBefore('-')?.toLongOrNull()
-            if (resp.code != 206 || from != start) throw DownloadFailure(DownloadReason.HTTP_ERROR, resp.code)
+            if (resp.code != 206 || from != start) throw DownloadFailure(DownloadReason.HTTP_ERROR, turnedAway = true)
             val buf = ByteArray((end - start).toInt())
             var off = 0
             resp.body.byteStream().use { input ->
