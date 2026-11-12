@@ -1,6 +1,8 @@
 package tv.own.owntv.core.live
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import tv.own.owntv.core.CorePerf
@@ -78,6 +80,13 @@ class LiveEpgReader(
     /** Provider-fetched guide rows per channel, so the grid and the preview share one request. */
     private val providerRows = java.util.concurrent.ConcurrentHashMap<Long, CachedRows>()
 
+    /**
+     * What the provider said when asked for a channel's guide. [entries] is null when the request
+     * failed — which is no answer at all, and is kept apart from the empty list of a provider that
+     * answered and has nothing on.
+     */
+    private class ProviderGuide(val entries: List<XtEpgEntry>?)
+
     /** Drop every cached now/next — the global guide offset moved, so all of them are stale. */
     fun clearCache() {
         cache.clear()
@@ -115,6 +124,9 @@ class LiveEpgReader(
                     // Days of stored guide — accurate for bulk-guide channels (the short-EPG API path
                     // leaves this null, since its ~8 entries only span a few hours).
                     val days = runCatching { epgDao.coverageDays(epgKey) }.getOrNull()?.takeIf { it > 0 }
+                    // Poterx: a read cut short by the caller moving on fails here like any other, and
+                    // must not be kept for five minutes as "this channel has no days of guide".
+                    currentCoroutineContext().ensureActive()
                     fun EpgProgrammeEntity.shifted() = EpgShift.apply(this, shift).toXt()
                     val result = EpgNowNext(nowProg?.shifted(), nextProg?.shifted(), future.drop(1).take(4).map { it.shifted() }, previous = prevProg?.shifted(), coverageDays = days, nowDetails = nowProg?.details)
                     cache[ch.id] = CachedEpg(now, result)
@@ -123,7 +135,10 @@ class LiveEpgReader(
             }
 
             // 2) Provider short-EPG API fallback (Xtream get_short_epg / Stalker get_short_epg).
-            val entries = providerEntries(ch, shift) ?: return@withContext null
+            // Poterx: a request that failed is not cached. It used to come back as an empty list and be
+            // kept for five minutes as "nothing on" — so a channel passed over quickly, whose request was
+            // dropped as the cursor moved on, stayed blank in the list until it was focused long after.
+            val entries = providerEntries(ch, shift)?.entries ?: return@withContext null
             // A gap in the provider's own guide data around "now" (nothing covers this instant) must leave
             // current null — picking the next entry that simply hasn't ended yet would mislabel an upcoming
             // programme as live. "Next"/"Later" are computed independently below, so a genuine
@@ -147,27 +162,35 @@ class LiveEpgReader(
      *
      * Null — as distinct from empty — means there is no provider guide to ask for at all: no stream
      * id, no source, or a source type with no short-EPG endpoint. Callers use that to tell "the
-     * provider says nothing is on" from "there was nobody to ask".
+     * provider says nothing is on" from "there was nobody to ask". A request that failed comes back
+     * as a [ProviderGuide] with no entries, and one cut short by cancellation does not come back at
+     * all: either would otherwise be cached as an empty guide.
      *
      * **It is only ever a few hours.** `get_short_epg` returns about eight entries, so this fills now
      * and the rest of the evening, never a whole scrollable day.
      */
-    private suspend fun providerEntries(ch: ChannelEntity, shift: Int): List<XtEpgEntry>? {
+    private suspend fun providerEntries(ch: ChannelEntity, shift: Int): ProviderGuide? {
         val streamId = ch.remoteId ?: return null
         val source = sourceDao.getById(ch.sourceId) ?: return null
         val raw = when (source.type) {
             SourceType.XTREAM -> runCatching { xtreamClient.getShortEpg(source, streamId, limit = SHORT_EPG_LIMIT) }
-                .getOrNull().orEmpty()
+                .getOrNull()
             SourceType.STALKER -> runCatching {
                 streamUrlResolver.shortEpg(source, streamId)
                     .map { XtEpgEntry(title = it.title, description = it.description, startMs = it.startMs, stopMs = it.stopMs) }
-            }.getOrNull().orEmpty()
+            }.getOrNull()
             else -> return null
         }
+        // Poterx: runCatching above also catches the cancellation of a request whose caller has moved
+        // on. That is not the provider saying anything — stop here, before anyone caches it.
+        currentCoroutineContext().ensureActive()
+        if (raw == null) return ProviderGuide(null)
         // The provider's own guide needs the same shift as the stored one — same channel, same clock.
-        return if (shift == 0) raw else raw.map {
-            it.copy(startMs = it.startMs + shift * 60_000L, stopMs = it.stopMs + shift * 60_000L)
-        }
+        return ProviderGuide(
+            if (shift == 0) raw else raw.map {
+                it.copy(startMs = it.startMs + shift * 60_000L, stopMs = it.stopMs + shift * 60_000L)
+            },
+        )
     }
 
     /**
@@ -196,7 +219,9 @@ class LiveEpgReader(
         val shift = EpgShift.minutesFor(cust, channel, globalShiftMinutes)
         val key = (cust.epgMatchResolver.epgIdFor(channel) ?: channel.epgChannelId)
             ?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: channel.streamUrl
-        val rows = providerEntries(channel, shift).orEmpty().map {
+        // A failed request is kept as an empty guide here, as before: the grid asks for every row in
+        // view, and a provider that is down must not be asked again on every scroll.
+        val rows = providerEntries(channel, shift)?.entries.orEmpty().map {
             EpgProgrammeEntity(
                 id = -it.startMs,
                 sourceId = channel.sourceId,
