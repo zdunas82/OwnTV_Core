@@ -16,7 +16,7 @@ class VodQueriesTest {
                 "ORDER BY COALESCE(x.year, x.parsedYear) DESC, x.name ASC",
             q.sql,
         )
-        assertArrayEquals(arrayOf<Any>(1L, 2L, 2020, 2026), q.args())
+        assertArrayEquals(arrayOf<Any>(1L, 2L, 2020L, 2026L), q.args())
     }
 
     @Test
@@ -26,7 +26,7 @@ class VodQueriesTest {
             "SELECT x.* FROM series x WHERE x.categoryId = ? AND x.name LIKE '%' || ? || '%' AND COALESCE(x.year, x.parsedYear) >= ? ORDER BY x.sortOrder ASC, x.name ASC",
             q.sql,
         )
-        assertArrayEquals(arrayOf<Any>(42L, "dark", 2015), q.args())
+        assertArrayEquals(arrayOf<Any>(42L, "dark", 2015L), q.args())
     }
 
     @Test
@@ -43,7 +43,7 @@ class VodQueriesTest {
                 "WHERE x.sourceId IN (?) AND COALESCE(x.year, x.parsedYear) >= ? AND COALESCE(x.year, x.parsedYear) <= ? ORDER BY x.name ASC",
             custom.sql,
         )
-        assertArrayEquals(arrayOf<Any>(7L, "cc:3", 1L, 2000, 2000), custom.args())
+        assertArrayEquals(arrayOf<Any>(7L, "cc:3", 1L, 2000L, 2000L), custom.args())
     }
 
     @Test
@@ -53,11 +53,14 @@ class VodQueriesTest {
             "SELECT COUNT(*) FROM movies x WHERE x.sourceId IN (?) AND (x.categoryId IS NULL OR NOT x.categoryId IN (?,?)) AND COALESCE(x.year, x.parsedYear) >= ?",
             q.sql,
         )
-        assertArrayEquals(arrayOf<Any>(1L, 5L, 6L, 2024), q.args())
+        assertArrayEquals(arrayOf<Any>(1L, 5L, 6L, 2024L), q.args())
     }
 }
 
-/** The bound arguments, in order, as [androidx.sqlite.db.SimpleSQLiteQuery] hands them to the database. */
+/**
+ * The bound arguments, in order, as [androidx.sqlite.db.SimpleSQLiteQuery] hands them to the database:
+ * a year goes in as an Int and is bound as a Long, which is why the expected values above are longs.
+ */
 private fun androidx.sqlite.db.SupportSQLiteQuery.args(): Array<Any?> {
     val out = arrayOfNulls<Any>(argCount)
     bindTo(object : androidx.sqlite.db.SupportSQLiteProgram {
