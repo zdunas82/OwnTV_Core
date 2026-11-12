@@ -1283,6 +1283,7 @@
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/EpgDao.kt	SELECT COUNT(*) FROM epg_programmes WHERE sourceId IN (:sourceIds)
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/EpgDao.kt	SELECT COUNT(DISTINCT epgChannelId) FROM epg_programmes WHERE sourceId IN (:sourceIds)
 1	sql	core/src/main/java/tv/own/owntv/core/database/dao/EpgDao.kt	SELECT DISTINCT epgChannelId FROM epg_programmes LIMIT :limit
+1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/EpgDao.kt	SELECT DISTINCT epgChannelId FROM epg_programmes WHERE sourceId = :sourceId AND stopMs > :now
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/EpgDao.kt	SELECT DISTINCT sourceId FROM epg_channels WHERE epgChannelId IN (:epgChannelIds) AND iconUrl IS NOT NULL AND iconUrl != ''
 1	sql	core/src/main/java/tv/own/owntv/core/database/dao/EpgDao.kt	SELECT MAX(id) FROM epg_programmes
 1	room-schema	core/src/main/java/tv/own/owntv/core/database/dao/EpgDao.kt	SELECT description FROM epg_programmes WHERE id = :programmeId LIMIT 1
@@ -3048,7 +3049,8 @@
 1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG batch store sourceId=$storeId rows=${batch.size} writeMs=$batchMs
 1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG cache promote failed storeId=$storeId — cache skipped this run
 1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG channel filter sourceId=$storeId ids=${needed?.size ?: 0} active=${needed != null}
-1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG channel prune sourceId=$sourceId stale=${staleIds.size} ms=${SystemClock.elapsedRealtime() - startedAt}
+1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG channel prune sourceId=$sourceId stale=${plan.drop.size} ms=${SystemClock.elapsedRealtime() - startedAt}
+1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG channel prune sourceId=$sourceId thin feed — keeping ${plan.keep.size} of ${upcoming.size} channels with a guide to come
 2	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG channels store sourceId=$storeId rows=${channels.size} ms=$channelsMs
 1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG hash preload sourceId=$storeId ms=${SystemClock.elapsedRealtime() - preloadStartedAt}
 1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG hash tracker cap ($maxEntries) reached for sourceId=$sourceId — further channels sync write-through
@@ -3057,7 +3059,7 @@
 1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG programme prune sourceId=$sourceId stale=${staleIds.size} overflowed=${tracker.overflowed} ms=${SystemClock.elapsedRealtime() - startedAt}
 1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG prune sourceId=$storeId ms=${SystemClock.elapsedRealtime() - pruneStartedAt}
 1	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EPG sync incomplete — keeping partial (written=$writtenCount accepted=$processedCount inserted=$inserted updated=$updated skipped=$skipped)
-31	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EpgRepository
+32	log	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	EpgRepository
 1	protocol	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	Guide channels match no playlist channel
 1	protocol	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	Guide has no programmes in the guide window
 1	room-schema	core/src/main/java/tv/own/owntv/core/repository/EpgRepository.kt	INSERT OR IGNORE INTO `epg_keep_history` VALUES (?)

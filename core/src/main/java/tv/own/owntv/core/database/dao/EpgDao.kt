@@ -229,6 +229,10 @@ interface EpgDao {
     @Query("SELECT epgChannelId FROM epg_channels WHERE sourceId = :sourceId")
     suspend fun epgChannelIdsForSource(sourceId: Long): List<String>
 
+    /** Poterx: the guide ids of [sourceId] that still have a programme to come (one ending after [now]). */
+    @Query("SELECT DISTINCT epgChannelId FROM epg_programmes WHERE sourceId = :sourceId AND stopMs > :now")
+    suspend fun epgChannelIdsWithUpcoming(sourceId: Long, now: Long): List<String>
+
     @Query("DELETE FROM epg_channels WHERE sourceId = :sourceId AND epgChannelId IN (:epgChannelIds)")
     suspend fun deleteChannelsByEpgIds(sourceId: Long, epgChannelIds: List<String>)
 

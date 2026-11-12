@@ -306,14 +306,16 @@ class EpgRepository(
         return refreshUrl(source.id, url, source.userAgent, onProgress)
     }
 
-    // Poterx: feeds whose last download stopped part-way and kept what it had.
+    // Poterx: feeds whose last download stopped part-way, or listed only part of the channels, and
+    // kept what it had.
     private val cutShort: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /**
      * Poterx: true when the last [refreshUrl] of [storeId] lost its connection part-way and returned
-     * normally with the part it had. That return looks like a finished sync, so it was stamped as
-     * one and the missing days waited for the next scheduled refresh. The callers ask here and try
-     * again sooner instead.
+     * normally with the part it had, or parsed to its end but left out so many channels that their
+     * stored guide was kept rather than dropped (see [channelPrunePlan]). Either return looks like a
+     * finished sync, so it was stamped as one and the rest waited for the next scheduled refresh.
+     * The callers ask here and try again sooner instead.
      */
     fun lastRefreshCutShort(storeId: Long): Boolean = storeId in cutShort
 
@@ -535,7 +537,9 @@ class EpgRepository(
             // The rows already written stay (a partial guide still beats none) — only the *cache file*
             // is held to a completeness bar, because unlike the rows it gets re-read later as if it were
             // the whole feed. Anything short of a clean parse leaves the previous good cache in place.
-            if (parseCompleted && tmpFile.length() > 0) {
+            // Poterx: nor does a download that carried no channel and no programme of ours — an error
+            // page sent as "200 OK" parses to its end like a guide does.
+            if (parseCompleted && tmpFile.length() > 0 && (channels.isNotEmpty() || processedCount > 0)) {
                 if (!(file.delete() || !file.exists()) || !tmpFile.renameTo(file)) {
                     Log.w("EpgRepository", "EPG cache promote failed storeId=$storeId — cache skipped this run")
                 }
@@ -547,7 +551,7 @@ class EpgRepository(
         val parsedAt = SystemClock.elapsedRealtime()
         if (parseCompleted) {
             removedProgrammes = pruneRemovedProgrammes(storeId, hashTracker)
-            removedChannels = pruneRemovedChannels(storeId, channels.keys)
+            removedChannels = pruneRemovedChannels(storeId, channels.keys, channelsWithProgrammes)
         }
         val pruneStartedAt = SystemClock.elapsedRealtime()
         pruneFinishedProgrammes(now)
@@ -743,27 +747,43 @@ class EpgRepository(
         return staleIds.size
     }
 
-    private suspend fun pruneRemovedChannels(sourceId: Long, seenChannelIds: Set<String>): Int {
+    /**
+     * Drop the guide ids of [sourceId] that this download did not list. [fedChannelIds] are the ids
+     * it carried a programme for.
+     *
+     * Poterx: not when that would empty a large part of a guide that still has programmes to come —
+     * see [channelPrunePlan]. Those ids are kept and the refresh is marked as cut short.
+     */
+    private suspend fun pruneRemovedChannels(sourceId: Long, seenChannelIds: Set<String>, fedChannelIds: Set<String>): Int {
         val startedAt = SystemClock.elapsedRealtime()
         val existingChannelIds = epgDao.epgChannelIdsForSource(sourceId)
-        val staleIds = if (seenChannelIds.isEmpty()) {
+        val missing = if (seenChannelIds.isEmpty()) existingChannelIds else existingChannelIds.filterNot(seenChannelIds::contains)
+        // Only asked when enough ids are missing for the answer to matter: one scan of the source's rows.
+        val upcoming = if (missing.size >= THIN_FEED_MIN_CHANNELS) {
+            epgDao.epgChannelIdsWithUpcoming(sourceId, System.currentTimeMillis()).toHashSet()
+        } else {
+            emptySet()
+        }
+        val plan = channelPrunePlan(missing, upcoming, fedChannelIds)
+        if (plan.keep.isNotEmpty()) {
+            cutShort.add(sourceId)
+            Log.w("EpgRepository", "EPG channel prune sourceId=$sourceId thin feed — keeping ${plan.keep.size} of ${upcoming.size} channels with a guide to come")
+        }
+        if (seenChannelIds.isEmpty() && plan.keep.isEmpty()) {
             if (existingChannelIds.isNotEmpty()) {
                 epgDao.clearChannelsForSource(sourceId)
                 epgDao.clearSource(sourceId)
             }
-            existingChannelIds
         } else {
-            existingChannelIds.filterNot(seenChannelIds::contains).also { stale ->
-                stale.chunked(QUERY_CHUNK).forEach {
-                    epgDao.deleteChannelsByEpgIds(sourceId, it)
-                    // The per-channel hash tracker never loads channels absent from the feed, so
-                    // their leftover programmes must be dropped here rather than by the id prune.
-                    epgDao.deleteProgrammesForChannels(sourceId, it)
-                }
+            plan.drop.chunked(QUERY_CHUNK).forEach {
+                epgDao.deleteChannelsByEpgIds(sourceId, it)
+                // The per-channel hash tracker never loads channels absent from the feed, so
+                // their leftover programmes must be dropped here rather than by the id prune.
+                epgDao.deleteProgrammesForChannels(sourceId, it)
             }
         }
-        Log.d("EpgRepository", "EPG channel prune sourceId=$sourceId stale=${staleIds.size} ms=${SystemClock.elapsedRealtime() - startedAt}")
-        return staleIds.size
+        Log.d("EpgRepository", "EPG channel prune sourceId=$sourceId stale=${plan.drop.size} ms=${SystemClock.elapsedRealtime() - startedAt}")
+        return plan.drop.size
     }
 
     /**
