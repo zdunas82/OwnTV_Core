@@ -63,7 +63,9 @@ fun livePagingSource(
         }
     } else {
         when (key) {
-            LiveKey.All -> channelDao.searchAll(query, ids)
+            // Poterx: with the provider's sort the results keep the provider's order, as a folder's do;
+            // by name they put "CI Polsat" and "POLSAT Music" ahead of "Polsat" itself.
+            LiveKey.All -> if (playlist) channelDao.searchAllOriginal(query, ids) else channelDao.searchAll(query, ids)
             LiveKey.Favorites -> channelDao.searchFavorites(query, profileId, ids)
             LiveKey.History -> channelDao.searchHistory(query, profileId, ids)
             LiveKey.Catchup -> channelDao.searchCatchup(query, ids)

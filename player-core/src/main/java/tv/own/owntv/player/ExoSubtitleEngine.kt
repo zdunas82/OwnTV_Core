@@ -402,6 +402,9 @@ class ExoSubtitleEngine(
         fpsItem++; ptsRate.reset(); measuredFpsReported.set(false)
         throughputTracker.resetPassive()
         itemStartPosMs = positionMs.coerceAtLeast(0)
+        archiveSpanStartMs = itemStartPosMs
+        archiveFurthestMs = itemStartPosMs
+        archiveSpanPending = false
         seekedThisItem = false
         audioWatchdog.reset()
         noVideoWatchdog.disarm()
@@ -426,7 +429,7 @@ class ExoSubtitleEngine(
         // The audio sink's capabilities are baked in at construction too, so the same rule applies: a
         // cached player built before the session latched to stereo would keep the sink that failed.
         val wantStereo = !AudioOutputPolicy.allowsMultichannel(surroundMode)
-        val wantNetwork = NetworkBuild(filmBufferSecs, filmTimeoutSecs, filmTargetBytes())
+        val wantNetwork = NetworkBuild(filmBufferSecs, filmTimeoutSecs, filmTargetBytes(), isArchiveItem)
         val wantPassthrough = passthroughAllowed
         if (player != null && (builtForSoftware != softwarePreferred || builtForStereo != wantStereo || builtForNetwork != wantNetwork || builtForPassthrough != wantPassthrough)) {
             android.util.Log.i(TAG, "rebuilding ExoPlayer for ${if (softwarePreferred) "software" else "hardware"} decode, ${if (wantStereo) "stereo" else "device"} audio")
@@ -616,10 +619,17 @@ class ExoSubtitleEngine(
     private var builtForPassthrough = true
 
     /** What the cached player's network side was built with. See the rebuild check in `start`. */
-    private var builtForNetwork = NetworkBuild(0, 0, 0)
+    private var builtForNetwork = NetworkBuild(0, 0, 0, false)
 
-    /** The buffer seconds, timeout and byte target baked into a built player; any change rebuilds it. */
-    private data class NetworkBuild(val bufferSecs: Int, val timeoutSecs: Int, val targetBytes: Int)
+    /** The buffer seconds, timeout and byte target baked into a built player; any change rebuilds it.
+     *  Poterx: and whether it was built for an archive, which keeps a back buffer ([ArchiveSeek]). */
+    private data class NetworkBuild(val bufferSecs: Int, val timeoutSecs: Int, val targetBytes: Int, val archive: Boolean)
+
+    /** Poterx: the archive span held in memory, for [ArchiveSeek.clamp]: where it starts, the furthest
+     *  position played in it, and whether an absolute seek has just moved it (re-anchored on the tick). */
+    private var archiveSpanStartMs = 0L
+    private var archiveFurthestMs = 0L
+    private var archiveSpanPending = false
 
     /** Bitrate of the most recent film on this engine, the best guess for sizing the next build — the
      *  player is built before the new item has loaded, so its own bitrate can't be known yet. */
@@ -697,10 +707,14 @@ class ExoSubtitleEngine(
         // may grow it up to the device's film ceiling and the heap cap, so it is no longer fixed at 16/48 MiB.
         val maxBufferMs = FilmNetwork.bufferSecs(filmBufferSecs, budget) * 1000
         val minBufferMs = (maxBufferMs / 2).coerceIn(15_000, maxBufferMs)
-        val builtTargetBytes = filmTargetBytes()
+        // Poterx: an archive keeps what was just played, so a step back needs no request the panel
+        // cannot answer ([ArchiveSeek]); its byte target grows by the room that takes.
+        val archiveBuild = isArchiveItem
+        val builtTargetBytes = if (archiveBuild) ArchiveSeek.targetBytes(filmTargetBytes(), SmartBuffer.exoHeapCapBytes(heapClassMb)) else filmTargetBytes()
         android.util.Log.i(TAG, "film_buffer max=${maxBufferMs}ms bytes=$builtTargetBytes bitrateHint=${lastFilmBitrateBps ?: -1} heapClassMb=$heapClassMb")
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(minBufferMs, maxBufferMs, 2_500, 5_000)
+            .setBackBuffer(if (archiveBuild) ArchiveSeek.BACK_BUFFER_MS else 0, archiveBuild)
             // Durations alone are not a memory bound: at 120 s (the top RAM tier) a 4K stream can ask the
             // allocator for hundreds of MB before the duration target is met, and a TV app dies long
             // before that. Media3's own default is derived from the duration, so scale with the same
@@ -833,6 +847,8 @@ class ExoSubtitleEngine(
 
     fun seekTo(positionMs: Long) {
         seekedThisItem = true
+        // Poterx: the span in memory starts over wherever this lands (see [ArchiveSeek]).
+        if (isArchiveItem) archiveSpanPending = true
         player?.seekTo(positionMs.coerceAtLeast(0)); emitPositionDuration()
     }
 
@@ -843,8 +859,14 @@ class ExoSubtitleEngine(
     fun seekBy(deltaMs: Long) {
         val p = player ?: return
         seekedThisItem = true
+        val position = p.currentPosition
+        var target = (position + deltaMs).coerceAtLeast(0)
+        // Poterx: an archive cannot be opened at an offset, so the step stays in memory ([ArchiveSeek]).
+        if (isArchiveItem && !archiveSpanPending) {
+            target = ArchiveSeek.clamp(target, position, archiveSpanStartMs, archiveFurthestMs, p.bufferedPosition)
+        }
         p.setSeekParameters(SeekParameters.CLOSEST_SYNC)
-        p.seekTo((p.currentPosition + deltaMs).coerceAtLeast(0))
+        p.seekTo(target)
         p.setSeekParameters(SeekParameters.EXACT)
         emitPositionDuration()
     }
@@ -864,6 +886,20 @@ class ExoSubtitleEngine(
     /** Called on a ~0.5s tick by [OwnTVPlayer] while active, so the HUD scrubber advances. */
     fun emitPositionDuration() {
         val p = player ?: return
+        if (isArchiveItem) {
+            // Poterx: what [ArchiveSeek.clamp] works from. After an absolute seek the span starts where
+            // playback has settled; otherwise the furthest point played moves on with it.
+            val position = p.currentPosition
+            if (archiveSpanPending) {
+                if (p.playbackState == Player.STATE_READY) {
+                    archiveSpanStartMs = position
+                    archiveFurthestMs = position
+                    archiveSpanPending = false
+                }
+            } else if (position > archiveFurthestMs) {
+                archiveFurthestMs = position
+            }
+        }
         val dur = p.duration.let { if (it == C.TIME_UNSET) 0L else it }
         callbacks.onPositionDuration(p.currentPosition.coerceAtLeast(0), dur.coerceAtLeast(0), p.bufferedPosition.coerceAtLeast(0))
         // The audio-output safety net rides the tick that is already running. On a hit the whole session

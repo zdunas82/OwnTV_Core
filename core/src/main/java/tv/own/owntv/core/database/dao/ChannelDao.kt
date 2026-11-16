@@ -448,6 +448,10 @@ interface ChannelDao {
     @Query("SELECT * FROM channels WHERE sourceId IN (:sourceIds) AND name LIKE '%' || :query || '%' ORDER BY name ASC")
     fun searchAll(query: String, sourceIds: List<Long>): PagingSource<Int, ChannelEntity>
 
+    /** Poterx: [searchAll] in the provider's order, as All Channels lists them with that sort ([pagingAllOriginal]). */
+    @Query("SELECT * FROM channels WHERE sourceId IN (:sourceIds) AND name LIKE '%' || :query || '%' ORDER BY sourceId ASC, sortOrder ASC, name ASC")
+    fun searchAllOriginal(query: String, sourceIds: List<Long>): PagingSource<Int, ChannelEntity>
+
     @Query("SELECT * FROM channels WHERE categoryId = :categoryId AND name LIKE '%' || :query || '%' ORDER BY sortOrder ASC, name ASC")
     fun searchInCategory(query: String, categoryId: Long): PagingSource<Int, ChannelEntity>
 
