@@ -574,6 +574,8 @@ class ExoSubtitleEngine(
     }
 
     private fun reprepareKeepingPosition(p: ExoPlayer, url: String) {
+        // Poterx: the buffer is dropped with the old item, so the span in memory starts over ([ArchiveSeek]).
+        if (isArchiveItem) archiveSpanPending = true
         val pos = p.currentPosition.coerceAtLeast(0)
         val wasPlaying = p.playWhenReady
         p.setMediaItem(buildMediaItem(url), pos)
@@ -630,6 +632,8 @@ class ExoSubtitleEngine(
     private var archiveSpanStartMs = 0L
     private var archiveFurthestMs = 0L
     private var archiveSpanPending = false
+    /** Poterx: the back buffer the built [player] holds for an archive (0 for a film, or when the heap had no room). */
+    private var builtArchiveBackBufferMs = 0
 
     /** Bitrate of the most recent film on this engine, the best guess for sizing the next build — the
      *  player is built before the new item has loaded, so its own bitrate can't be known yet. */
@@ -709,12 +713,15 @@ class ExoSubtitleEngine(
         val minBufferMs = (maxBufferMs / 2).coerceIn(15_000, maxBufferMs)
         // Poterx: an archive keeps what was just played, so a step back needs no request the panel
         // cannot answer ([ArchiveSeek]); its byte target grows by the room that takes.
-        val archiveBuild = isArchiveItem
-        val builtTargetBytes = if (archiveBuild) ArchiveSeek.targetBytes(filmTargetBytes(), SmartBuffer.exoHeapCapBytes(heapClassMb)) else filmTargetBytes()
+        val filmBytes = filmTargetBytes()
+        val heapCapBytes = SmartBuffer.exoHeapCapBytes(heapClassMb)
+        val archiveBackBufferMs = if (isArchiveItem) ArchiveSeek.backBufferMs(filmBytes, heapCapBytes) else 0
+        builtArchiveBackBufferMs = archiveBackBufferMs
+        val builtTargetBytes = if (isArchiveItem) ArchiveSeek.targetBytes(filmBytes, heapCapBytes) else filmBytes
         android.util.Log.i(TAG, "film_buffer max=${maxBufferMs}ms bytes=$builtTargetBytes bitrateHint=${lastFilmBitrateBps ?: -1} heapClassMb=$heapClassMb")
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(minBufferMs, maxBufferMs, 2_500, 5_000)
-            .setBackBuffer(if (archiveBuild) ArchiveSeek.BACK_BUFFER_MS else 0, archiveBuild)
+            .setBackBuffer(archiveBackBufferMs, archiveBackBufferMs > 0)
             // Durations alone are not a memory bound: at 120 s (the top RAM tier) a 4K stream can ask the
             // allocator for hundreds of MB before the duration target is met, and a TV app dies long
             // before that. Media3's own default is derived from the duration, so scale with the same
@@ -858,13 +865,21 @@ class ExoSubtitleEngine(
      *  the passthrough re-prime (which must not jump) never inherits the snap. */
     fun seekBy(deltaMs: Long) {
         val p = player ?: return
-        seekedThisItem = true
-        val position = p.currentPosition
+        val position = p.currentPosition.coerceAtLeast(0)
         var target = (position + deltaMs).coerceAtLeast(0)
-        // Poterx: an archive cannot be opened at an offset, so the step stays in memory ([ArchiveSeek]).
-        if (isArchiveItem && !archiveSpanPending) {
-            target = ArchiveSeek.clamp(target, position, archiveSpanStartMs, archiveFurthestMs, p.bufferedPosition)
+        if (isArchiveItem) {
+            // Poterx: an archive cannot be opened at an offset, so a step back stays in memory
+            // ([ArchiveSeek]); while the span is still settling after a jump there is nothing to step in.
+            if (deltaMs < 0) {
+                if (archiveSpanPending) return
+                target = ArchiveSeek.clamp(target, position, archiveSpanStartMs, archiveFurthestMs, builtArchiveBackBufferMs)
+            } else if (target > p.bufferedPosition) {
+                // Past the buffer the panel answers from a minute boundary ahead, as it always did; the
+                // span in memory starts over wherever that lands.
+                archiveSpanPending = true
+            }
         }
+        seekedThisItem = true
         p.setSeekParameters(SeekParameters.CLOSEST_SYNC)
         p.seekTo(target)
         p.setSeekParameters(SeekParameters.EXACT)
